@@ -13,6 +13,7 @@ cost model; `type` in its file selects the cost model and its search algorithm:
 | --- | --- | --- |
 | `dcp_benchmark` | Packaged attention predictions plus the user's non-attention times per layer, for [ordinary GQA](#ordinary-gqa) or [full Qwen3.5-35B-A3B](#full-qwen35-35b-a3b); the training configuration decides which | Lightweight planner |
 | `dynamic_usp` | A DynamicUSP cost profile: the [original profile](#original-profile) or, with `"hardware": "h100"`, the [calibration measured for classic P2P](#measured-h100-calibration) | DynamicUSP allocation and count search; [Stage 2](#stage-2) is an option of the original profile |
+| `dynamic_usp_flops` | [FLOPs over rates](#dynamic_usp_flops-cost-model) for GQA attention with an MoE feed-forward under classic P2P: the model sizes of the training configuration and five numbers of a coefficient file | DynamicUSP allocation and count search; optional [Stage 2 by moves](#stage-2-by-moves) |
 
 The scheduler runs in one CPU process on each DPxCP leader, without access to
 the GPUs. It decides which samples share a CP group and which ranks form each
@@ -24,14 +25,18 @@ reference](../../../../skills/mcore-configure-dcp-cost-model/references/model-op
 
 | Key | `type` | Meaning |
 | --- | --- | --- |
-| `type` | both | Required. `dcp_benchmark` or `dynamic_usp`. |
+| `type` | all | Required. `dcp_benchmark`, `dynamic_usp` or `dynamic_usp_flops`. |
 | `hardware` | `dcp_benchmark` | Required. `h100` or `gb200`: selects the attention parameters and the [NVLink topology](#nvlink-topology). |
 | `non_attention` | `dcp_benchmark` | Required. Object with exactly `forward_ms_per_layer` and `backward_ms_per_layer`, the user's [non-attention times](#dcp_benchmark-cost-models). |
 | `hardware` | `dynamic_usp` | Optional. `h100` selects the measured calibration; without it the original profile is used. |
 | `calibration` | `dynamic_usp` | Optional. Coefficient file that replaces the packaged coefficients of the selected profile. A relative path is resolved beside the runtime file. |
-| `max_cp_size` | both | Largest CP group the scheduler may form; see [CP group sizes](#cp-group-sizes). |
-| `async` | both | Optional, default `true`: plan the next global batch while the current one trains; see [Planning during training](#planning-during-training). |
-| `trace_dir` | both | Optional. Directory for planning records; see [Trace records](#trace-records). `~` is expanded; a relative path is relative to the working directory. |
+| `hardware` | `dynamic_usp_flops` | Required. `h100` or `gb200`: selects the packaged rates (`h100` only) and the [NVLink topology](#nvlink-topology). |
+| `calibration` | `dynamic_usp_flops` | Optional. Coefficient file with the five rates of that hardware; required where none is packaged. A relative path is resolved beside the runtime file. |
+| `stage2` | `dynamic_usp_flops` | Optional, default `0` (off). Refines the layout of the search by priced moves: `1` moves samples between CP groups, `2` also moves CP groups between ranks; or an object `{"moves": ["reassign", "relocate"], "time_budget_s": 1.0}`. See [Stage 2 by moves](#stage-2-by-moves). |
+| `max_cp_size` | all | Largest CP group the scheduler may form; see [CP group sizes](#cp-group-sizes). |
+| `async` | all | Optional, default `true`: plan the next global batch while the current one trains; see [Planning during training](#planning-during-training). |
+| `trace_dir` | all | Optional. Directory for planning records; see [Trace records](#trace-records). `~` is expanded; a relative path is relative to the working directory. |
+| `layer_times` | all | Optional, default `false`; needs `trace_dir`. For a calibration run: every rank times its transformer layers, and every trace record carries the times of the step before it; see [Layer times](#layer-times). |
 
 These are all the keys: another key, a key given twice, a missing required key
 or a value of the wrong type stops training while it starts. Every rank reads
@@ -43,9 +48,10 @@ reference](../../../../skills/mcore-configure-dcp-cost-model/references/model-op
 lists the messages. When all checks pass, rank 0 prints one line that starts
 with `Runtime DCP scheduler:` and names what the file selected: the cost model
 (`dcp_benchmark` for ordinary GQA, `qwen35_full`, `usp_calib_v1` for the
-original profile or `qwen3_h100_p2p`), the NVLink domain and CP group sizes.
+original profile, `qwen3_h100_p2p` or `gqa_p2p_flops`), the NVLink domain and
+CP group sizes.
 
-Both types require `--dynamic-context-parallel` (hence
+Every type requires `--dynamic-context-parallel` (hence
 `--calculate-per-token-loss`), a `--min-dynamic-context-parallel-size` that is
 a power of two dividing DPxCP, sequence parallelism off or tensor-parallel size
 1, and one pipeline stage without virtual stages or the conditions of [more
@@ -57,7 +63,9 @@ a `calibration` file for the whole run, must be byte-identical on every rank.
 The scheduler forms size-aligned CP groups whose sizes are powers of two that
 divide DPxCP, from `--min-dynamic-context-parallel-size` up to the largest size
 the cost model covers: 64 for ordinary GQA, 32 for full Qwen3.5, 8 for the H100
-calibration; the original DynamicUSP profile covers 8, 16 and 32. A sample fits
+calibration; the original DynamicUSP profile covers 8, 16 and 32, and
+`dynamic_usp_flops` the sizes whose groups stay inside one NVLink domain. A
+sample fits
 a group of `cp` ranks when its length, rounded up to a multiple of 2 x DPxCP,
 is at most `cp * max_seqlen_per_dp_cp_rank`. A group holds at most 64
 sequences, or a smaller `--thd-max-packed-sequences`, of which a dummy sequence
@@ -125,6 +133,32 @@ that directory, which every rank creates and write-tests at start-up.
 | `statistics.stage2` | Only with [Stage 2](#stage-2) switched on: `skipped` (why Stage 2 did no work for the plan, else null), `counts` (the outcome of every microbatch; `ADOPTED`: re-packed), `planned` (the layout that the plan is: `stage2`, `stage1` or `default`), `stage1_predicted_ms` and `stage2_predicted_ms`, `microbatches` (a record for each microbatch that was re-packed, failed or is marked `runtime_capacity`, at most 64; `microbatches_omitted` counts the rest), `first_error` and `rescore_error` (a contained error) and `guard_threshold` (the threshold of the ring placement guard). |
 | `model_metadata` | What the cost model loaded: its name, inputs and file digests; `nvlink_domain_size`, the `N` of the [NVLink topology](#nvlink-topology) or null (original profile with a `calibration` table). For `dynamic_usp`, `calibration_path`, `calibration_sha256` and `solver`, the [solver coefficients](#original-profile) in use. For full Qwen3.5, `source_tail_padding`. |
 | `pipeline`, `pipeline_terms_are_default`, `pipeline_agreement_key` | Only with [more than one pipeline stage](#more-than-one-pipeline-stage): the stages, the virtual stages and the count multiple (both 1 for a run without virtual stages); the `solver.pipeline` terms left at their defaults; the key of the lengths and the plan that the stages compared at this step. |
+| `statistics.stage2_moves` | Only with `"stage2"` of `dynamic_usp_flops` above 0: the moves and their time budget, `start_predicted_ms` (the layout the planner selected), `accepted` and `trials` per kind of move, `converged`, `elapsed_s`, `refined_ms` (the refined layout by the planner's own score) and `planned`: `moves` when the refined layout is the plan, else `selected`. |
+| `previous_layer_times` | Only with `layer_times`: the [layer times](#layer-times) of the step that ran before this record, on this rank. An empty list in the first record. |
+
+### Layer times
+
+`"layer_times": true` is for calibration runs. Once the model is built, every
+rank attaches timers (`megatron/core/datasets/dcp_layer_times.py`) to its
+transformer layers and to their self-attention modules. A trace record then
+carries, for each microbatch of the step before it, one object:
+
+| Field | Meaning |
+| --- | --- |
+| `layer_forward_ms`, `layer_backward_ms` | Forward and backward time of the transformer layers of this rank, summed over the layers. |
+| `attention_forward_ms`, `attention_backward_ms` | The part of it inside the self-attention modules. |
+| `..._count` | For each of the four sums, the number of layers in it. |
+| `after_layers_ms` | From the end of the last layer's forward pass to the start of its backward pass: final norm, output layer and loss, both directions. |
+
+A time includes the waits inside the module: for the other ranks of the CP
+group in attention, for the ranks of the expert-parallel block in the
+feed-forward. On a GPU the times are taken with CUDA events that are read once
+per step, so nothing waits for the GPU inside a step; the backward times come
+from hooks on the autograd nodes of a module's input and output, and no module
+is wrapped. Start-up refuses the key without `trace_dir`, with CUDA graphs, and
+on a rank that holds more than one model chunk (interleaved pipeline stages).
+The [calibration skill](../../../../skills/mcore-calibrate-dcp-flops/SKILL.md)
+of `dynamic_usp_flops` reads these records; training does not.
 
 ## `dcp_benchmark` cost models
 
@@ -369,6 +403,95 @@ each (largest error 2.9 % forward, 7.7 % backward). Errors, then known limits:
 own measured profile. The [calibration
 skill](../../../../skills/mcore-calibrate-dcp-runtime/SKILL.md) describes the
 measurement, the file and how to add a profile for other hardware.
+
+## `dynamic_usp_flops` cost model
+
+`{"type": "dynamic_usp_flops", "hardware": "h100", "max_cp_size": 8}` plans
+with the search of [`dynamic_usp`](#dynamic_usp-cost-profiles) (Stage 1 and the
+count search; one pipeline stage, the same trace statistics; not its Stage 2
+but, when switched on, [Stage 2 by moves](#stage-2-by-moves)) and
+prices a layout from the FLOPs of the model that is trained
+(`models/gqa_p2p_flops.py`). One layer of a CP group of `c` ranks whose samples
+have `n_i` valid tokens takes, forward and backward together:
+
+```text
+T_layer = gamma * (3 * F_pair * W / P_attn + 3 * F_ff / P_moe) + N_x * t_x
+
+F_pair = 4 * H_q * d               forward FLOPs of one query-key pair
+W      = sum(n_i^2 / 2) / c        query-key pairs of one rank
+F_ff   = 2 * T * K * 3 * h * h_e   forward FLOPs of the MoE feed-forward of one rank
+N_x    = 2c, 0 at c = 1            ring steps of the P2P attention: c forward, c backward
+```
+
+A backward pass counts as twice the FLOPs of its forward pass. Attention counts
+the valid tokens and the feed-forward the whole per-rank buffer; padding, the
+projections, the norms and the router have no term of their own.
+
+| Symbol | Meaning | Source |
+| --- | --- | --- |
+| `L`, `H_q`, `d`, `h`, `K`, `h_e` | Layers, query heads, head dimension, hidden size, experts per token, expert width | Training configuration: `num_layers`, `num_attention_heads`, `kv_channels`, `hidden_size`, `moe_router_topk`, `moe_ffn_hidden_size` |
+| `T` | Tokens of the per-rank buffer | `max_seqlen_per_dp_cp_rank` |
+| `P_attn`, `P_moe` | Rate of attention and of the feed-forward, in TFLOPS | Coefficient file: `P_attn_tflops`, `P_moe_tflops` |
+| `t_x` | Milliseconds of one ring step of the P2P attention, inside an NVLink domain: the work around the attention kernel of a step (its inputs, the launch of the kernel, the corrections of its results, the request of its K/V exchange). A rank of a group of `c` ranks runs `c` steps forward and `c` backward, a group of one rank none. It is added in full: the K/V transfer itself overlaps the kernel and is a small part of a step | Coefficient file: `t_x_ms` |
+| `gamma` | Factor on the two compute terms | Coefficient file: `gamma` |
+| `C_opt` | Milliseconds added once per step (optimizer and gradient synchronisation) | Coefficient file: `C_opt_ms` |
+
+A microbatch is `L` layers. The ranks of a CP group wait for each other at
+every attention and the ranks of an expert-parallel block at every
+feed-forward; no rank waits for all others after the first forward pass, and
+`C_opt` is added once. So without expert parallelism
+(`expert_model_parallel_size` 1) a group takes `L * T_layer` and starts when
+its ranks are free, and with it a block whose CP groups lie inside it advances
+by `L` times the layer of its slowest group (the timeline is below that by at
+most the backward attention of one layer per microbatch).
+
+### Stage 2 by moves
+
+`"stage2"` in the runtime file refines the layout that the search selected
+(`runtime/layout_moves.py`). Every CP group keeps its size. `reassign` changes
+which samples a group holds: one sample moves to another group, two samples
+trade places, or two groups of one size trade their contents. `relocate`
+changes which ranks a group runs on. Every candidate is priced with the cost
+model and the step timeline and kept only when the predicted step time drops;
+the planner then scores the refined layout once more and plans it only when it
+is predicted faster than the selected one. The moves share a time budget per
+global batch (1 s by default) in the CPU planner, which with `async` runs
+while the step before trains. It is not the DynamicUSP [Stage 2](#stage-2) of
+the original profile, which re-packs each microbatch and is switched on in a
+coefficient file. With one expert-parallel block over all ranks a microbatch
+takes what its slowest group takes and the moves have little to gain; they
+gain more with several blocks or without expert parallelism. No step time
+with and without the moves was measured yet.
+
+Start-up refuses what the formulas do not describe: `cp_comm_type` other than
+`p2p`, `cp_partition_mode` other than `zigzag`, tensor- or
+expert-tensor-parallel size above 1, more than one pipeline stage, another
+attention architecture, a model without MoE or with `moe_layer_freq` other
+than 1, activation recomputation, and a CP group size whose groups span two
+NVLink domains (on `h100` a run with DPxCP above 8 needs a `max_cp_size` of at
+most 8). It does not compare the model sizes, the expert-parallel size, DPxCP,
+the precision or the MoE dispatch with the run in which the rates were
+obtained: the sizes are inputs of the formulas, and the rest is left to the
+rates and to `gamma`.
+
+The packaged `h100` rates are provisional and were not measured:
+`P_attn_tflops` 601.121, `P_moe_tflops` 86.874 and `t_x_ms` 0.713126 are a
+least-squares fit to the layer times that the [measured H100
+calibration](#measured-h100-calibration) predicts for its 60 fitting cases
+(Qwen3-30B-A3B, expert-parallel size 8; median difference 1.4 %, largest
+6.9 %), `C_opt_ms` 118.414 is the iteration tail of that calibration and
+`gamma` is 1. They were not compared with step times measured on H100.
+`calibration` names a file in the format of the packaged
+`models/gqa_p2p_flops_h100.json`: `schema_version` 1, `name`, `hardware`,
+exactly the five `rates`, a `source` object that says how they were obtained
+and an optional `status`; the trace records all of it with every plan. Its
+[calibration skill](../../../../skills/mcore-calibrate-dcp-flops/SKILL.md)
+checks a file against the trace of a training run and fits `gamma` and
+`C_opt_ms`, or all rates: from the [layer times](#layer-times) of every CP
+group when the run recorded them, else from its step times. The
+[configuration
+reference](../../../../skills/mcore-configure-dcp-cost-model/references/model-options.md)
+does not cover this type yet.
 
 ## Provenance
 

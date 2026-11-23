@@ -26,6 +26,7 @@ import torch
 
 from megatron.core.datasets import dcp_runtime_worker
 from megatron.core.datasets.data_schedule_utils import get_batch_and_global_seqlens
+from megatron.core.datasets.dcp_layer_times import collect_layer_times
 from megatron.core.datasets.dcp_runtime_scheduler.models.solver_section import pipeline_schedule
 from megatron.core.datasets.dcp_runtime_scheduler.runtime.config import (
     SCHEDULERS,
@@ -456,6 +457,9 @@ class DcpSchedulePrefetcher:
             incumbent_error=pending.get('incumbent_error'),
             **pipeline_fields,
         )
+        if self.spec.get('layer_times'):
+            # The layers of the step that just ended, timed on this rank (dcp_layer_times).
+            self.last_telemetry['previous_layer_times'] = collect_layer_times()
         self._trace(self.last_telemetry)
         self._report_stage2_failure(result['statistics'])
         self.sequence_number += 1
@@ -673,6 +677,7 @@ def build_runtime_spec(
             'tensor_model_parallel_size=1'
         )
     options = dict(settings['options'])
+    moves = None  # dynamic_usp_flops: the moves that refine the planner's layout.
     minimum = config.min_dynamic_context_parallel_size
     maximum = settings['max_cp_size']
     if scheduler_type == 'dynamic_usp':
@@ -692,6 +697,18 @@ def build_runtime_spec(
                     'calibration measured for classic P2P groups of 1, 2, 4 or 8 ranks'
                 )
             options['allow_provisional'] = True
+    elif scheduler_type == 'dynamic_usp_flops':
+        # The FLOPs-over-rate cost model takes its model sizes from the training
+        # configuration; "hardware" stays an option and selects its packaged rates.
+        model = 'gqa_p2p_flops'
+        # "stage2" is an option of the planner: the moves that refine its layout.
+        moves = options.pop('stage2', None)
+        try:
+            options.update(model_class(model).options_from_config(config))
+        except ValueError as error:
+            raise ValueError(
+                f'{where} does not match the training configuration: {error}'
+            ) from error
     elif is_full_qwen35_config(config):
         model = 'qwen35_full'
     else:
@@ -799,8 +816,11 @@ def build_runtime_spec(
         solver_options={},
         hardware=settings['options'].get('hardware'),
     )
+    if moves is not None:
+        spec['solver_options'] = dict(moves=moves)
     spec['async'] = settings['async']
     spec['trace_dir'] = settings['trace_dir']
+    spec['layer_times'] = settings.get('layer_times', False)
     for key in ('config_path', 'config_sha256'):
         if key in settings:
             spec[key] = settings[key]
@@ -833,6 +853,10 @@ def build_runtime_spec(
         if getattr(planner.model, 'sample_weight_is_default', False):
             # A user's table without solver.sample_weight: the start-up line names the default.
             spec['sample_weight_is_default'] = True
+    if getattr(planner, 'refiner', None) is not None:
+        # The start-up line names the moves that refine every layout of this run.
+        chosen = planner.move_options
+        spec['stage2_moves'] = dict(moves=list(chosen.moves), time_budget_s=chosen.time_budget_s)
     if getattr(planner, 'stage2_enabled', False):
         # The start-up line says that Stage 2 is on; ``idle`` is the planner's reason when it
         # has no work in any plan of this run, else None.
@@ -922,12 +946,20 @@ def describe_runtime_spec(spec: dict) -> str:
         f"CP group sizes={list(geometry['allowed_cp_sizes'])}, at most "
         f"{geometry['max_group_seqs']} sequences per CP group, "
         f"async={'on' if spec['async'] else 'off'}, runtime file={spec.get('config_path')}"
+        f"{', layer times recorded' if spec.get('layer_times') else ''}"
         f'{weight}{_describe_stage2(spec)}{_describe_pipeline(spec)}'
     )
 
 
 def _describe_stage2(spec: dict) -> str:
     """The part of the start-up line that a coefficient file with Stage 2 switched on adds."""
+    moves = spec.get('stage2_moves')
+    if moves is not None:
+        # "stage2" of the runtime file (dynamic_usp_flops): the layout is refined by moves.
+        return (
+            f", Stage 2 by moves ({', '.join(moves['moves'])}; at most "
+            f"{moves['time_budget_s']:g} s per global batch)"
+        )
     stage2 = spec.get('stage2')
     if stage2 is None:
         return ''

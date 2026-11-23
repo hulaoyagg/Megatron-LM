@@ -43,6 +43,7 @@ _LEGACY_TRAIN_START_TIME = time.time()  # NOTE(asolergi-nv): Legacy timestamp
 from megatron.core import mpu, tensor_parallel
 from megatron.core._rank_utils import safe_get_rank, safe_get_world_size
 from megatron.core.datasets.data_schedule import validate_dynamic_cp_runtime, wrap_data_iterator
+from megatron.core.datasets.dcp_layer_times import attach_layer_timers
 from megatron.core.datasets.dcp_schedule_prefetch import describe_runtime_spec
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed import (
@@ -3551,6 +3552,9 @@ def pretrain(
             runtime_groups = ProcessGroupCollection.use_mpu_process_groups()
         runtime_spec = validate_dynamic_cp_runtime(model_cfg, runtime_groups)
         _check_dynamic_cp_runtime_batch_sizes(runtime_spec)
+        if runtime_spec.get('layer_times'):
+            # A calibration run: every rank times its transformer layers for the trace.
+            attach_layer_timers(model)
         print_rank_0(describe_runtime_spec(runtime_spec))
 
     callback_manager.callback_context.model = model

@@ -7,6 +7,8 @@ import json
 import math
 from pathlib import Path
 
+from .layout_moves import MoveOptions
+
 # ``type`` selects a whole scheduler: one cost model bound to one solver. This table is
 # the only place that defines the binding and the keys each type accepts.
 SCHEDULERS = {
@@ -21,8 +23,16 @@ SCHEDULERS = {
         "required": (),
         "optional": ("hardware", "calibration"),
     },
+    # The same solver with the FLOPs-over-rate cost model for GQA under classic P2P;
+    # ``hardware`` selects its packaged rates and ``calibration`` replaces them. ``stage2``
+    # refines the layout of the solver by priced moves (``layout_moves``).
+    "dynamic_usp_flops": {
+        "solver": "dynamic_usp",
+        "required": ("hardware",),
+        "optional": ("calibration", "stage2"),
+    },
 }
-COMMON_KEYS = ("max_cp_size", "async", "trace_dir")
+COMMON_KEYS = ("max_cp_size", "async", "trace_dir", "layer_times")
 NON_ATTENTION_KEYS = ("forward_ms_per_layer", "backward_ms_per_layer")
 # Largest accepted non-attention time. Real values are far below it; one above it is a
 # unit mistake (for example nanoseconds), which the timeline arithmetic cannot represent.
@@ -116,6 +126,13 @@ def validate_runtime_config(data, config_path="<runtime configuration>"):
         # A relative directory stays relative to the working directory of the run.
         trace_dir = str(_expanded_path(trace_dir, f"{where}: trace_dir"))
 
+    # Calibration runs: time every transformer layer and add the times to the trace records.
+    layer_times = data.get("layer_times", False)
+    if type(layer_times) is not bool:
+        raise ValueError(f"{where}: layer_times must be true or false, got {layer_times!r}")
+    if layer_times and trace_dir is None:
+        raise ValueError(f"{where}: layer_times writes into the trace; it needs trace_dir")
+
     options = {}
     if "hardware" in data:
         hardware = data["hardware"]
@@ -155,12 +172,21 @@ def validate_runtime_config(data, config_path="<runtime configuration>"):
             raise ValueError(
                 f"{where}: calibration {calibration!r} cannot be resolved: {error}"
             ) from error
+    if "stage2" in data:
+        # A level (0: off, 1: reassign, 2: reassign and relocate) or the moves and their
+        # time budget; an option of the planner, not of the cost model.
+        try:
+            MoveOptions.parse(data["stage2"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{where}: {error}") from error
+        options["stage2"] = data["stage2"]
     return {
         "type": scheduler_type,
         "options": options,
         "max_cp_size": maximum,
         "async": asynchronous,
         "trace_dir": trace_dir,
+        "layer_times": layer_times,
     }
 
 

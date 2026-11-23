@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "name": "gqa_p2p_flops",
+  "hardware": "h100",
+  "status": "provisional",
+  "rates": {
+    "P_attn_tflops": 601.121,
+    "P_moe_tflops": 86.874,
+    "t_x_ms": 0.713126,
+    "gamma": 1.0,
+    "C_opt_ms": 118.414
+  },
+  "source": {
+    "method": "Not measured on GPUs. P_attn_tflops, P_moe_tflops and t_x_ms are a least-squares fit of this model's layer time to the layer times that the packaged qwen3_h100_p2p calibration predicts for its 60 fitting cases; C_opt_ms is the iteration tail of that calibration; gamma was not fitted.",
+    "fit": {
+      "cases": 60,
+      "layer_error_median": 0.014,
+      "layer_error_max": 0.069
+    },
+    "recipe": {
+      "num_layers": 48,
+      "hidden_size": 2048,
+      "num_attention_heads": 32,
+      "num_query_groups": 4,
+      "kv_channels": 128,
+      "num_moe_experts": 128,
+      "moe_router_topk": 8,
+      "moe_ffn_hidden_size": 768,
+      "moe_router_force_load_balancing": true,
+      "dp_cp_size": 32,
+      "expert_model_parallel_size": 8,
+      "max_seqlen_per_dp_cp_rank": 4096,
+      "cp_sizes": [1, 2, 4, 8],
+      "max_sample_length": 16384,
+      "max_sequences_per_group": 64
+    }
+  }
+}

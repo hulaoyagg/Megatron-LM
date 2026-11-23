@@ -44,9 +44,11 @@ def _initialize_planner(spec):
                 pipeline=(pipeline['stages'], pipeline['virtual_stages']),
                 pipeline_schedule=schedule,
             )
-        return _runtime_module('runtime.dynamic_usp').DynamicUSPRuntimePlanner(
-            geometry, model, **options
-        )
+        planner = _runtime_module('runtime.dynamic_usp').DynamicUSPRuntimePlanner
+        if 'moves' in options:
+            # The same planner, with its selected layout refined by priced moves.
+            planner = _runtime_module('runtime.dynamic_usp_moves').DynamicUSPMovesPlanner
+        return planner(geometry, model, **options)
     runtime = _runtime_module('runtime.lightweight')
     return runtime.LightweightRuntimePlanner(geometry, model, runtime.LightweightOptions(**options))
 

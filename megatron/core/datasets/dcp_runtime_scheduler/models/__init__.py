@@ -36,6 +36,10 @@ def model_class(name):
         from .qwen3_h100_p2p import Qwen3H100P2PCostModel
 
         return Qwen3H100P2PCostModel
+    if name == 'gqa_p2p_flops':
+        from .gqa_p2p_flops import GqaP2PFlopsCostModel
+
+        return GqaP2PFlopsCostModel
     if name == 'qwen35_full':
         from .qwen35_full import Qwen35FullCostModel
 

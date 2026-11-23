@@ -194,8 +194,9 @@ class ModelParallelConfig:
     """Path to a JSON file that replaces the default dynamic-CP heuristic with a CPU
     scheduler planning each global batch from a cost model. Its "type" selects the whole
     scheduler: "dcp_benchmark" (benchmark cost model with the lightweight solver; ordinary
-    GQA or full Qwen3.5 follows from the training configuration) or "dynamic_usp"
-    (DynamicUSP cost model with the DynamicUSP solver). Every other scheduler input lives in
+    GQA or full Qwen3.5 follows from the training configuration), "dynamic_usp"
+    (DynamicUSP cost model with the DynamicUSP solver) or "dynamic_usp_flops" (FLOPs-over-rate
+    cost model with the DynamicUSP solver). Every other scheduler input lives in
     that file; see megatron/core/datasets/dcp_runtime_scheduler/README.md. Requires
     dynamic_context_parallel.
     """

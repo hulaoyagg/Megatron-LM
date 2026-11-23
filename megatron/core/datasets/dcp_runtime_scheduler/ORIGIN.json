@@ -24,7 +24,17 @@
     "models/attention_gb200.json": "a943dd39f20ed91ef164d383528822df4aed9d494218970a4a30b5e9d4bbec4b",
     "models/attention_h100.json": "b715dd1f4853c240e46ec74dd46aeefd5f6a8d40dfeeef825bc67c4ef2453388",
     "models/full35b/parameters.json": "c59b3ec1df44a9dc2606f6c031c425f587f6274b0d44b80662f39cce6aa6fb24",
-    "models/full35b/manifest.json": "b6b6b859287ac10d1dd591a4aaa5a2a0e8357c4c10194b11bcbe4c6be7284eac"
+    "models/full35b/manifest.json": "b6b6b859287ac10d1dd591a4aaa5a2a0e8357c4c10194b11bcbe4c6be7284eac",
+    "models/gqa_p2p_flops_h100.json": "d6bf7cf5fe5c09e1ee21ec0f012146be447534d8fed6a0ce30f44a9b536c8403"
+  },
+  "gqa_p2p_flops": {
+    "scope": "FLOPs-over-rate cost model for GQA attention with an MoE feed-forward under classic P2P, bound to the DynamicUSP solver as scheduler type dynamic_usp_flops. Written for this package; not part of the source commit above and not ported from DynamicUSP",
+    "model": "models/gqa_p2p_flops.py",
+    "parameters": {
+      "h100": "models/gqa_p2p_flops_h100.json"
+    },
+    "measured": false,
+    "rates": "Provisional: P_attn_tflops, P_moe_tflops and t_x_ms are a least-squares fit to the layer times that models/qwen3_h100_p2p.json predicts for its 60 fitting cases, C_opt_ms is its iteration tail and gamma is 1. No GPU measurement and no comparison with a measured step time"
   },
   "dynamic_usp": {
     "project": "DynamicUSP",
